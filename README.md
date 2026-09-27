@@ -2,6 +2,8 @@
 
 基于 LLM 驱动的深度学习库模糊测试（Fuzzing）框架，主要用于 PyTorch 等 DL 库的覆盖率导向漏洞挖掘。
 
+> **TensorFlow 版本**：本框架针对 TensorFlow 的适配版本请参见 [ArgSpaceFuzz-TF](https://github.com/yyds1233/ArgSpaceFuzz-TF.git)。
+
 ## 项目概述
 
 本项目通过 **知识增强的 LLM 生成 + 双通道赌博机筛选** 的方式，自动化完成从 API 参数空间建模、Fuzz Harness 生成到高效 Fuzzing 执行的全流程。核心思路是：
