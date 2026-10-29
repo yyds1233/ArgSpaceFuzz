@@ -1,0 +1,13 @@
+{
+  "api_name": "concurrent_oracle.tests.fixtures.seeded.lost_update.update_",
+  "oracles": {
+    "O2": {
+      "status": "SUPPORTED",
+      "expected": "serialized increments: final shared value equals the serial baseline"
+    },
+    "O3": {
+      "status": "SUPPORTED"
+    }
+  },
+  "notes": "Synthetic positive control for O2; not a PyTorch API contract."
+}
