@@ -67,6 +67,14 @@ DEFAULT_CONTRACTS: Dict[str, Dict] = {
         },
         "notes": "Out-of-range indices are expected to raise.",
     },
+    "torch.Tensor.add_": {
+        "oracles": {
+            "O2": {"status": UNKNOWN, "expected": "shared in-place writes are not documented as thread-safe"},
+            "O3": {"status": SUPPORTED},
+            "O4": {"status": UNKNOWN, "expected": "the API mutates its receiver by design"},
+        },
+        "notes": "Instance method; capture is synthetic because Python cannot patch torch.Tensor.add_ safely.",
+    },
     "torch.nn.utils.clip_grad_value_": {
         "oracles": {"O2": {"status": UNKNOWN}, "O3": {"status": SUPPORTED}, "O4": {"status": UNKNOWN}},
         "notes": "The API mutates gradients by design; O4 is not a read-only scenario.",

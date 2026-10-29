@@ -5,6 +5,7 @@ from ..schemas import (
     INCONCLUSIVE, NOT_APPLICABLE, PASS, SUPPORTED, VIOLATION,
     OracleCheckResult,
 )
+from .common import incomplete_reason, is_complete
 
 EXPECTED_TYPES = {"RuntimeError", "ValueError", "IndexError", "TypeError", "AssertionError", "NotImplementedError"}
 
@@ -20,6 +21,13 @@ def _role_exceptions(obs):
 def evaluate(plan, baseline, concurrent, registry) -> OracleCheckResult:
     if not concurrent:
         return OracleCheckResult("O5", NOT_APPLICABLE, "No concurrent observation.")
+    incomplete = [o for o in concurrent if not is_complete(o)]
+    if incomplete:
+        return OracleCheckResult(
+            "O5", INCONCLUSIVE,
+            "Incomplete observation(s) cannot be used for exception-isolation checks: "
+            + incomplete_reason(incomplete),
+        )
     any_exc = [e for obs in concurrent for e in (obs.exceptions or [])]
     if not any_exc:
         return OracleCheckResult("O5", NOT_APPLICABLE, "No exceptions observed in the mixed-case scenario.")

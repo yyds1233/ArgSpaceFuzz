@@ -25,6 +25,8 @@ def _run_once(
     tag: str,
     case_map: list | None = None,
     enable_recovery: bool = True,
+    config_id: str = "",
+    role: str = "",
 ) -> Observation:
     run_dir = cfg.outputs_dir / "runs" / plan.plan_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -59,7 +61,8 @@ def _run_once(
     except subprocess.TimeoutExpired as exc:
         rc = 124
         stderr = (exc.stderr or "") if isinstance(exc.stderr, str) else ""
-    return load_observation(obs_path, plan.plan_id, rc, stderr)
+    return load_observation(obs_path, plan.plan_id, rc, stderr,
+                            config_id=config_id, role=role)
 
 
 def run_plan(harness_path: Path, plan: ConcurrentTestPlan, cfg: EngineConfig) -> List[Observation]:
@@ -69,42 +72,52 @@ def run_plan(harness_path: Path, plan: ConcurrentTestPlan, cfg: EngineConfig) ->
     shared = bool(plan.execution.get("shared", False))
     observations: List[Observation] = []
 
-    external = [int(x) for x in plan.execution.get("external_threads", [2])]
-    n = max(external) if external else 2
-
-    # C00 baseline.  For shared-state plans, the baseline must perform the
-    # same TOTAL number of serial operations as the concurrent run (n* trials),
-    # otherwise a lost-update run can accidentally match a 1-thread baseline.
+    external = [int(x) for x in plan.execution.get("external_threads", [2])] or [2]
+    internal = [int(x) for x in plan.execution.get("internal_threads", [1])] or [1]
     baseline_shared = shared and plan.state_model in ("shared_mutable_tensor", "shared_readonly")
-    baseline_trials = trials * n if baseline_shared else trials
     baseline_case = int(plan.execution.get("baseline_case_index", 0))
-    observations.append(_run_once(
-        harness_path, plan, cfg,
-        threads=1, internal_threads=1, trials=baseline_trials,
-        shared=baseline_shared, tag="baseline",
-        case_map=[baseline_case], enable_recovery=False,
-    ))
-    observations.append(_run_once(
-        harness_path, plan, cfg,
-        threads=n, internal_threads=1, trials=trials,
-        shared=shared, tag=f"c10_n{n}",
-        case_map=plan.thread_case_map or None,
-    ))
 
-    # C01 / C11 internal-parallel configurations.
-    internal = [int(x) for x in plan.execution.get("internal_threads", [1])]
-    for t in [x for x in internal if x > 1]:
+    def baseline(config_id: str, n_ops: int):
+        return _run_once(
+            harness_path, plan, cfg,
+            threads=1, internal_threads=1,
+            trials=(trials * n_ops if baseline_shared else trials),
+            shared=baseline_shared, tag=f"baseline_{config_id}",
+            case_map=[baseline_case], enable_recovery=False,
+            config_id=config_id, role="baseline",
+        )
+
+    for n in sorted(set(external)):
+        config_id = f"n{n}"
+        observations.append(baseline(config_id, n))
+        observations.append(_run_once(
+            harness_path, plan, cfg,
+            threads=n, internal_threads=1, trials=trials,
+            shared=shared, tag=f"c10_{config_id}",
+            case_map=plan.thread_case_map or None,
+            config_id=config_id, role="concurrent",
+        ))
+
+    for t in sorted({x for x in internal if x > 1}):
+        config_id = f"t{t}"
+        observations.append(baseline(config_id, 1))
         observations.append(_run_once(
             harness_path, plan, cfg,
             threads=1, internal_threads=t, trials=trials,
-            shared=shared, tag=f"c01_t{t}",
+            shared=shared, tag=f"c01_{config_id}",
             case_map=[baseline_case], enable_recovery=False,
+            config_id=config_id, role="concurrent",
         ))
-        if n > 1:
+        for n in sorted(set(external)):
+            if n <= 1:
+                continue
+            cid = f"n{n}_t{t}"
+            observations.append(baseline(cid, n))
             observations.append(_run_once(
                 harness_path, plan, cfg,
                 threads=n, internal_threads=t, trials=trials,
-                shared=shared, tag=f"c11_n{n}_t{t}",
+                shared=shared, tag=f"c11_{cid}",
                 case_map=plan.thread_case_map or None,
+                config_id=cid, role="concurrent",
             ))
     return observations

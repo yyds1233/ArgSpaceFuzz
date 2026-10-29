@@ -100,40 +100,46 @@ def capture_in_process(
     Returns (case_dict, metadata).  case_dict is None when no call was seen.
     """
     harness_path = Path(harness_path).resolve()
-    spec = importlib.util.spec_from_file_location("concurrent_oracle_original_harness", harness_path)
-    if spec is None or spec.loader is None:
-        raise CaptureError(f"cannot load harness module: {harness_path}")
-    module = importlib.util.module_from_spec(spec)
-    # Some fuzz_api_one harnesses call atheris.Setup/Fuzz at module top level
-    # (not guarded by __main__).  Importing such a file must not start the
-    # fuzzer; neutralize the two entry points while we load and capture.
-    import atheris
-    _orig_setup, _orig_fuzz = atheris.Setup, atheris.Fuzz
-    atheris.Setup = lambda *a, **k: None
-    atheris.Fuzz = lambda *a, **k: None
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        atheris.Setup, atheris.Fuzz = _orig_setup, _orig_fuzz
 
-    if not hasattr(module, "TestOneInput"):
-        raise CaptureError("harness has no TestOneInput")
-
-    module_name, _, attr = target_api.rpartition(".")
-    if not module_name:
-        raise CaptureError(f"invalid target_api: {target_api}")
-    target_module = None
-    for candidate in (module_name, "torch.nn.functional", "torch"):
+    # Resolve the target BEFORE loading the harness.  This makes alias imports
+    # (``from torch import addmm as my_addmm``) bind our wrapper, instead of
+    # binding the original function before we can patch it.
+    parts = target_api.split(".")
+    instance_method = len(parts) >= 3 and parts[-2] in ("Tensor", "Module")
+    if instance_method:
+        module_path = ".".join(parts[:-2])
+        attr = parts[-1]
         try:
-            m = importlib.import_module(candidate)
-            if hasattr(m, attr):
-                target_module = m
-                break
-        except Exception:
-            continue
-    if target_module is None:
-        raise CaptureError(f"target attribute not found: {target_api} ({module_name}.{attr})")
-    original = getattr(target_module, attr)
+            target_module = getattr(importlib.import_module(module_path), parts[-2])
+        except Exception as exc:
+            raise CaptureError(f"cannot resolve instance-method class {target_api}: {exc}") from exc
+        try:
+            original = getattr(target_module, attr)
+        except Exception as exc:
+            raise CaptureError(f"target attribute not found: {target_api}") from exc
+        # torch.Tensor methods are C-level descriptors and cannot be replaced
+        # reliably.  Fail with an explicit diagnostic; the pipeline uses a
+        # synthetic instance-method case instead.
+        raise CaptureError(
+            f"target_patch_unsupported: instance method {target_api!r} cannot be "
+            "monkey-patched safely; instance_method=True; use a synthetic case"
+        )
+    else:
+        module_name, _, attr = target_api.rpartition(".")
+        if not module_name:
+            raise CaptureError(f"invalid target_api: {target_api}")
+        target_module = None
+        for candidate in (module_name, "torch.nn.functional", "torch"):
+            try:
+                m = importlib.import_module(candidate)
+                if hasattr(m, attr):
+                    target_module = m
+                    break
+            except Exception:
+                continue
+        if target_module is None:
+            raise CaptureError(f"target attribute not found: {target_api} ({module_name}.{attr})")
+        original = getattr(target_module, attr)
 
     captured: List[Dict[str, Any]] = []
     call_index = {"n": 0}
@@ -155,11 +161,37 @@ def capture_in_process(
             captured.append({"index": idx, "error": f"clone failed: {exc}", "has_out": "out" in kwargs})
         return original(*args, **kwargs)
 
-    setattr(target_module, attr, wrapper)
+    import atheris
+    _orig_setup, _orig_fuzz = atheris.Setup, atheris.Fuzz
+    patched_target = False
     last_exc = None
     best = None
     best_meta = None
     try:
+        # Some fuzz_api_one harnesses call atheris.Setup/Fuzz at module top
+        # level (not guarded by __main__); neutralize the fuzzer entry points.
+        atheris.Setup = lambda *a, **k: None
+        atheris.Fuzz = lambda *a, **k: None
+        try:
+            setattr(target_module, attr, wrapper)
+            patched_target = True
+        except Exception as exc:
+            raise CaptureError(
+                f"target_patch_unsupported: {type(exc).__name__}: {exc}; "
+                f"target={target_api!r} instance_method={instance_method}. "
+                "Use a synthetic instance-method case instead."
+            ) from exc
+
+        spec = importlib.util.spec_from_file_location(
+            "concurrent_oracle_original_harness", harness_path
+        )
+        if spec is None or spec.loader is None:
+            raise CaptureError(f"cannot load harness module: {harness_path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if not hasattr(module, "TestOneInput"):
+            raise CaptureError("harness has no TestOneInput")
+
         seeds = _seed_candidates(seed, max_seeds)
         for s in seeds:
             captured.clear()
@@ -197,9 +229,15 @@ def capture_in_process(
                         "captured_exception": last_exc,
                         "seed_count": len(seeds),
                         "score": list(score),
+                        "instance_method": instance_method,
                     }
     finally:
-        setattr(target_module, attr, original)
+        atheris.Setup, atheris.Fuzz = _orig_setup, _orig_fuzz
+        if patched_target:
+            try:
+                setattr(target_module, attr, original)
+            except Exception:
+                pass
 
     if best is not None:
         return {"target_api": target_api, "args": best["args"], "kwargs": best["kwargs"]}, best_meta
@@ -207,6 +245,7 @@ def capture_in_process(
         "error": "no target call captured",
         "last_exception": last_exc,
         "captured_calls": len(captured),
+        "instance_method": instance_method,
     }
 
 

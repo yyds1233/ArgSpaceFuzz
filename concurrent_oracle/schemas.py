@@ -91,6 +91,8 @@ class HarnessAnalysis:
     call_sites: List[Dict[str, Any]] = field(default_factory=list)
     has_out_kwarg: bool = False
     has_inplace_call: bool = False
+    has_instance_method_call: bool = False
+    instance_method_uncertain: bool = False
     has_fuzzed_data_provider: bool = False
     has_atheris_setup: bool = False
     has_atheris_fuzz: bool = False
@@ -120,6 +122,9 @@ class SuitabilityReport:
     required_evidence: List[str] = field(default_factory=list)
     rationale: str = ""
     confidence: float = 0.0
+    rule_candidates: List[str] = field(default_factory=list)
+    llm_candidates: List[str] = field(default_factory=list)
+    llm_evidence: List[str] = field(default_factory=list)
     analysis: Dict[str, Any] = field(default_factory=dict)
     llm_used: bool = False
     warnings: List[str] = field(default_factory=list)
@@ -152,6 +157,8 @@ class ConcurrentTestPlan:
     recovery_case_index: Optional[int] = None
     context_probe: bool = False
     context_mode: str = "call"
+    expected_exception_types: List[str] = field(default_factory=list)
+    expected_behavior: str = ""
     notes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -178,6 +185,8 @@ class CaseSpec:
     args_kinds: List[str] = field(default_factory=list)
     captured_exception: Optional[str] = None
     require_out: bool = False
+    expected_exception_types: List[str] = field(default_factory=list)
+    expected_behavior: str = ""
     notes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -212,6 +221,9 @@ class ConcurrentHarnessArtifact:
 class Observation:
     plan_id: str
     execution_status: str = COMPLETED
+    config_id: str = ""
+    role: str = ""
+    completeness: str = "complete"
     calls: int = 0
     successful_calls: int = 0
     exceptions: List[Dict[str, Any]] = field(default_factory=list)
@@ -267,6 +279,7 @@ class OracleResult:
     oracle_results: List[OracleCheckResult] = field(default_factory=list)
     reproduction_rate: Optional[float] = None
     failure_artifacts: List[str] = field(default_factory=list)
+    config_results: List[Dict[str, Any]] = field(default_factory=list)
     summary: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -283,6 +296,7 @@ class OracleResult:
             oracle_results=oracles,
             reproduction_rate=data.get("reproduction_rate"),
             failure_artifacts=data.get("failure_artifacts", []),
+            config_results=data.get("config_results", []),
             summary=data.get("summary", ""),
         )
 

@@ -5,6 +5,7 @@ from ..schemas import (
     INCONCLUSIVE, NOT_APPLICABLE, PASS, SUPPORTED, VIOLATION,
     OracleCheckResult,
 )
+from .common import incomplete_reason, is_complete
 
 
 def _expected_for_role(role: str):
@@ -18,6 +19,13 @@ def _expected_for_role(role: str):
 def evaluate(plan, baseline, concurrent, registry) -> OracleCheckResult:
     if not concurrent:
         return OracleCheckResult("O6", NOT_APPLICABLE, "No concurrent observation.")
+    incomplete = [o for o in concurrent if not is_complete(o)]
+    if incomplete:
+        return OracleCheckResult(
+            "O6", INCONCLUSIVE,
+            "Incomplete observation(s) cannot be used for context checks: "
+            + incomplete_reason(incomplete),
+        )
     mismatches = []
     any_probe = False
     checked_grad = 0
@@ -49,7 +57,7 @@ def evaluate(plan, baseline, concurrent, registry) -> OracleCheckResult:
             if expected is None:
                 continue
             checked_grad += 1
-            actual = last.get("grad_enabled")
+            actual = last.get("grad_inside", last.get("grad_enabled"))
             if actual is not expected:
                 mismatches.append({
                     "threads": obs.thread_count,
@@ -57,6 +65,13 @@ def evaluate(plan, baseline, concurrent, registry) -> OracleCheckResult:
                     "role": role,
                     "expected": expected,
                     "actual": actual,
+                })
+            if last.get("grad_restored") is False:
+                mismatches.append({
+                    "threads": obs.thread_count,
+                    "thread": tid,
+                    "role": role,
+                    "reason": "grad mode was not restored after the call/context",
                 })
         if obs.main_grad_enabled is False:
             mismatches.append({

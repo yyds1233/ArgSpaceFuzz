@@ -20,6 +20,7 @@ class TestPipelineSmoke(unittest.TestCase):
         self.assertEqual(report.decision, "READY")
         self.assertIn("O2", report.candidate_oracles)
         self.assertIn("O3", report.candidate_oracles)
+        self.assertEqual(report.rule_candidates, report.candidate_oracles)
         self.assertTrue(analysis.has_out_kwarg)
         plans = generate_plans(report, ContractRegistry(cfg.contract_dir), cfg,
                                target_api=a.api_name, has_out=analysis.has_out_kwarg)
@@ -34,6 +35,29 @@ class TestPipelineSmoke(unittest.TestCase):
                              external_threads=[2], trials=2, timeout_seconds=30)
         out = run_pipeline(FIXTURES / "llm.torch.matmul.py", cfg, max_plans=3)
         self.assertTrue(any(r.get("status") == "EXECUTED" for r in out["results"]))
+
+    @unittest.skipUnless(os.environ.get("RUN_CONCURRENT_SMOKE") == "1",
+                         "set RUN_CONCURRENT_SMOKE=1 for the slow end-to-end smoke")
+    def test_end_to_end_o1_repeat_interleave(self):
+        from concurrent_oracle.pipeline import run_pipeline
+        cfg = default_config(outputs_dir=Path("/tmp/co_unittest_o1"),
+                             external_threads=[1], trials=1, timeout_seconds=30)
+        out = run_pipeline(FIXTURES / "llm.torch.repeat_interleave.py", cfg,
+                           max_plans=1, oracle_filter=["O1"])
+        self.assertTrue(any("O1:PASS" in str(r.get("oracle_status", ""))
+                            for r in out["results"]), out["results"])
+
+    @unittest.skipUnless(os.environ.get("RUN_CONCURRENT_SMOKE") == "1",
+                         "set RUN_CONCURRENT_SMOKE=1 for the slow end-to-end smoke")
+    def test_end_to_end_instance_method(self):
+        from concurrent_oracle.pipeline import run_pipeline
+        seeded = HERE / "fixtures" / "seeded"
+        cfg = default_config(outputs_dir=Path("/tmp/co_unittest_inst"),
+                             external_threads=[2], trials=1, timeout_seconds=30)
+        out = run_pipeline(seeded / "instance_method_harness.py", cfg,
+                           max_plans=1, oracle_filter=["O3"])
+        self.assertTrue(any("O3:PASS" in str(r.get("oracle_status", ""))
+                            for r in out["results"]), out["results"])
 
     @unittest.skipUnless(os.environ.get("RUN_CONCURRENT_SMOKE") == "1",
                          "set RUN_CONCURRENT_SMOKE=1 for the slow end-to-end smoke")

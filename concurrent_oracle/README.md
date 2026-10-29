@@ -8,10 +8,13 @@ Harness，输出是并发测试计划、生成的并发 Harness、执行观测�
 - 已实现 P0：数据模型、Harness 加载/静态分析、规则适用性分析、可选 LLM
   适用性分析、测试计划生成、固定 case 捕获、模板化并发 Harness 生成、
   静态校验、串行基线 + 外部多线程执行、O1/O2/O3、重复复现和报告。
-- 已实现 P1 基础版：O5 混合 case 异常隔离、O6 grad-mode 上下文探针、
-  O7 `jit.trace` 生命周期观测、C01/C11 内部并行配置。
-- P2 预留：TensorFlow adapter/contracts；O6 的 `fork_rng`、O7 的
-  `symbolic_trace`/`make_fx`、完整 reducer 仍待扩展。
+- 已实现 P1 基础版：O5 混合 case 异常隔离、O6 grad-mode/fork_rng 生命周期、
+  O7 `jit.trace`/`symbolic_trace`/`make_fx`、C01/C11、线程数全扫描、
+  分项复现率、不完整观测保护和 LLM 适用性可追溯。
+- 已按 `fix_guide.md` 完成 P0–P2：Tensor 内容哈希、实例方法/别名捕获、
+  O1 逐观测判定、线程扫描、复现率拆分、O6 生命周期、不完整观测保护、
+  规则/LLM 候选保留、可选 LLM 转换后端。
+- P2 后续：TensorFlow adapter/contracts；LLM 转换与模板的完整对照实验。
 
 ### P1 已验证
 
@@ -30,16 +33,18 @@ reducer seeded O2 -> trials 3→1 仍 VIOLATION（配置缩小成功）
 
 ```bash
 RUN_CONCURRENT_SMOKE=1 python3 -m unittest concurrent_oracle.tests.test_pipeline_smoke -v
-# 10 tests: matmul O3, O5 cat, O6 grad, O6 fork_rng, O7 jit/symbolic/make_fx,
+# 12 tests: O1 repeat_interleave, instance method, matmul O3,
+#           O5 cat, O6 grad/fork_rng, O7 jit/symbolic/make_fx,
 #           reducer, seeded O2, analyze
 ```
 
 ### P0 已验证
 
 ```text
-单元测试：33 项通过（9 项慢速 e2e 默认跳过）
-慢速 e2e：RUN_CONCURRENT_SMOKE=1 -> 10 项全部通过
-  （matmul O3 + C01/C11、O5 cat、O6 grad/fork_rng、O7 jit/symbolic/make_fx、
+单元测试：55 项通过（11 项慢速 e2e 默认跳过）
+慢速 e2e：RUN_CONCURRENT_SMOKE=1 -> 12 项全部通过
+  （O1 repeat_interleave、instance method、matmul O3 + C01/C11、
+    O5 cat、O6 grad/fork_rng、O7 jit/symbolic/make_fx、
     reducer、seeded O2 正控）
 
 torch.matmul:
@@ -56,6 +61,39 @@ torch.repeat_interleave:
 seeded lost_update（O2 正控，合同 SUPPORTED）:
   O2               -> VIOLATION（并发最终值 3 vs 串行基线 6）
 ```
+
+### 按 fix_guide.md 修复
+
+P0：
+
+- Tensor 摘要改为 `content_hash + dtype/shape/layout/device + values/stats`；
+  `digests_equal` 支持 exact/tolerance 两种模式；覆盖 NaN/Inf/复数/稀疏/空 Tensor。
+  O2/O3 使用浮点容差，O4 使用精确内容比较；不再依赖 sum 单独判等。
+- 实例方法与别名：支持 `torch.Tensor.add_`（`x.add_`）静态识别；别名导入在
+  Harness 导入前打补丁；实例方法无法安全 monkey-patch 时返回
+  `target_patch_unsupported` 诊断，pipeline 使用 synthetic instance case。
+- O1 改为逐观测判定：每个 baseline/concurrent 观测必须匹配显式
+  `expected_exception_types`；拒绝、接受、意外异常、缺失、超时/崩溃分开记录；
+  部分配置失败不会被汇总成整体 PASS。
+
+P1：
+
+- `run_plan` 遍历所有 `external_threads`，并为每个配置生成 baseline/并发观测；
+  C01/C11 也分别记录；`OracleResult.config_results` 保存每个配置的独立结果。
+- 复现率拆分为 `violation_reproduction_rate`、`candidate_reproduction_rate`、
+  `inconclusive_rate`、`confirmed_reproduction_rate`；`INCONCLUSIVE` 不再算作
+  违规复现。
+- O6 grad 探针记录 `grad_before/grad_inside/grad_restored`，并单独检查
+  main thread；fork_rng 检查每线程 RNG restore 和 main RNG。
+- 观测增加 `completeness`；O2/O3/O4/O5/O6/O7 在 TIMEOUT/CRASH/ERROR/partial
+  时返回 `INCONCLUSIVE`，不直接判语义 VIOLATION。
+- LLM 适用性报告保存 `rule_candidates`、`llm_candidates`、`llm_evidence`；
+  候选取并集，LLM 不能删除规则候选。
+
+P2：
+
+- `--transformer llm` 为可选后端；生成的代码必须通过静态校验，失败则回退模板
+  并在结果中记录 `transformer_fallback`；不会把失败生成计入有效执行样本。
 
 ### 简化与限制
 
@@ -103,11 +141,16 @@ python3 -m concurrent_oracle.cli run \
   --plan /tmp/co_pipeline/plans/<plan>.json \
   --generated-harness /tmp/co_pipeline/generated_harnesses/<file>.py
 
-# 5) 重复复现
+# 5) 重复复现（violation / candidate / confirmed 分开统计）
 python3 -m concurrent_oracle.cli reproduce \
   --plan /tmp/co_pipeline/plans/<plan>.json \
   --generated-harness /tmp/co_pipeline/generated_harnesses/<file>.py \
-  --repeats 5
+  --repeats 5 --confirmed 1
+
+# 5b) optional LLM transformer backend
+python3 -m concurrent_oracle.cli pipeline \
+  --harness concurrent_oracle/tests/fixtures/harnesses/llm.torch.matmul.py \
+  --outputs-dir /tmp/co_llm --transformer llm --oracle O3 --max-plans 1
 
 # 6) P1 targeted oracles
 python3 -m concurrent_oracle.cli pipeline \

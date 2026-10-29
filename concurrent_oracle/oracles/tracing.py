@@ -5,11 +5,19 @@ from ..schemas import (
     INCONCLUSIVE, NOT_APPLICABLE, PASS, SUPPORTED, VIOLATION,
     OracleCheckResult,
 )
+from .common import incomplete_reason, is_complete
 
 
 def evaluate(plan, baseline, concurrent, registry) -> OracleCheckResult:
     if not concurrent:
         return OracleCheckResult("O7", NOT_APPLICABLE, "No concurrent observation.")
+    incomplete = [o for o in concurrent if not is_complete(o)]
+    if incomplete:
+        return OracleCheckResult(
+            "O7", INCONCLUSIVE,
+            "Incomplete observation(s) cannot be used for tracing checks: "
+            + incomplete_reason(incomplete),
+        )
     calls = sum(obs.successful_calls for obs in concurrent)
     exceptions = [e for obs in concurrent for e in (obs.exceptions or [])]
     recovery_failures = []

@@ -28,6 +28,7 @@ class EngineConfig:
     max_repair_rounds: int = 2
     contract_dir: Path = DEFAULT_CONTRACTS
     framework: str = "pytorch"
+    transformer_mode: str = "template"  # template | llm
     seed: int = 0
 
     def ensure_outputs(self) -> None:

@@ -98,10 +98,13 @@ def enhance_with_llm(
     decision = str(data.get("decision", rule_report.decision))
     if not _valid_decision(decision):
         decision = rule_report.decision
-    oracles = data.get("candidate_oracles") or rule_report.candidate_oracles
-    if not isinstance(oracles, list):
-        oracles = rule_report.candidate_oracles
-    oracles = [str(x) for x in oracles if str(x) in ("O1", "O2", "O3", "O4", "O5", "O6", "O7")]
+    llm_oracles = data.get("candidate_oracles") or rule_report.candidate_oracles
+    if not isinstance(llm_oracles, list):
+        llm_oracles = rule_report.candidate_oracles
+    llm_oracles = [str(x) for x in llm_oracles if str(x) in ("O1", "O2", "O3", "O4", "O5", "O6", "O7")]
+    rule_oracles = list(rule_report.candidate_oracles)
+    # Keep the union: an incomplete LLM answer must not delete a rule candidate.
+    oracles = sorted(set(rule_oracles) | set(llm_oracles))
 
     # Deterministic contract status overrides the LLM.
     aggregate = registry.aggregate_status(artifact.api_name, oracles) if oracles else rule_report.contract_status
@@ -121,6 +124,9 @@ def enhance_with_llm(
         required_evidence=list(data.get("required_evidence") or rule_report.required_evidence),
         rationale=str(data.get("rationale") or rule_report.rationale),
         confidence=float(data.get("confidence", rule_report.confidence) or 0.0),
+        rule_candidates=rule_oracles,
+        llm_candidates=llm_oracles,
+        llm_evidence=[str(x) for x in (data.get("evidence") or [])],
         analysis=rule_report.analysis,
         llm_used=True,
         warnings=list(rule_report.warnings),

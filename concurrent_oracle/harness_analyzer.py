@@ -69,20 +69,28 @@ def _resolve(node: ast.AST, aliases: Dict[str, str]) -> Optional[str]:
     return dotted
 
 
+def is_instance_method_api(api: str) -> bool:
+    parts = (api or "").split(".")
+    return len(parts) >= 3 and parts[-2] in ("Tensor", "Module")
+
+
 def _same_api(resolved: Optional[str], target: str) -> bool:
     if not resolved or not target:
         return False
     if resolved == target:
         return True
-    # Functional aliases: torch.nn.linear vs torch.nn.functional.linear, etc.
     rt = resolved.split(".")
     tt = target.split(".")
-    if rt and tt and rt[-1] == tt[-1]:
-        # Accept only if one side's module is a prefix of the other.
-        rmod = ".".join(rt[:-1])
-        tmod = ".".join(tt[:-1])
-        return rmod.startswith(tmod) or tmod.startswith(rmod)
-    return False
+    if not rt or not tt or rt[-1] != tt[-1]:
+        return False
+    # Instance methods: target torch.Tensor.add_, call x.add_.
+    if is_instance_method_api(target):
+        if not resolved.startswith("torch."):
+            return True
+    # Functional aliases: torch.nn.linear vs torch.nn.functional.linear, etc.
+    rmod = ".".join(rt[:-1])
+    tmod = ".".join(tt[:-1])
+    return rmod.startswith(tmod) or tmod.startswith(rmod)
 
 
 def analyze_harness(artifact, *, max_call_sites: int = 100) -> HarnessAnalysis:
@@ -103,6 +111,12 @@ def analyze_harness(artifact, *, max_call_sites: int = 100) -> HarnessAnalysis:
             if _same_api(resolved, target):
                 kw_names = [k.arg for k in node.keywords if k.arg]
                 func_name = resolved or _dotted(node.func) or "<call>"
+                instance_method = bool(
+                    is_instance_method_api(target)
+                    and resolved
+                    and not resolved.startswith("torch.")
+                    and resolved.split(".")[-1] == target.split(".")[-1]
+                )
                 site = {
                     "line": getattr(node, "lineno", None),
                     "col": getattr(node, "col_offset", None),
@@ -112,11 +126,20 @@ def analyze_harness(artifact, *, max_call_sites: int = 100) -> HarnessAnalysis:
                     "keywords": kw_names,
                     "has_out": "out" in kw_names,
                     "inplace": func_name.split(".")[-1].endswith("_"),
+                    "instance_method": instance_method,
+                    "receiver": resolved.rsplit(".", 1)[0] if instance_method else None,
+                    "instance_method_uncertain": instance_method,
                 }
                 analysis.call_sites.append(site)
                 analysis.call_count += 1
                 analysis.has_out_kwarg = analysis.has_out_kwarg or site["has_out"]
                 analysis.has_inplace_call = analysis.has_inplace_call or site["inplace"]
+                analysis.has_instance_method_call = (
+                    analysis.has_instance_method_call or instance_method
+                )
+                analysis.instance_method_uncertain = (
+                    analysis.instance_method_uncertain or site["instance_method_uncertain"]
+                )
                 if len(analysis.call_sites) >= max_call_sites:
                     break
             # Context managers / tracing calls are recorded regardless of target.
@@ -132,6 +155,10 @@ def analyze_harness(artifact, *, max_call_sites: int = 100) -> HarnessAnalysis:
         analysis.shared_state_clues.append("out= shared output tensor")
     if analysis.has_inplace_call:
         analysis.shared_state_clues.append("in-place operation")
+    if analysis.has_instance_method_call:
+        analysis.shared_state_clues.append(
+            "instance method call; receiver type is statically uncertain"
+        )
     if "requires_grad" in text:
         analysis.shared_state_clues.append("requires_grad / autograd state")
     if "Parameter" in text:

@@ -14,6 +14,7 @@ from .oracle_engine import evaluate_oracles, save_oracle_result
 from .pipeline import run_pipeline
 from .reducer import reduce_configuration
 from .reporter import write_json
+from .reproducer import reproduce_plan
 from .runner import run_plan
 from .schemas import ConcurrentTestPlan, OracleResult
 
@@ -26,6 +27,7 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--outputs-dir", default=None)
     parser.add_argument("--contract-dir", default=None)
     parser.add_argument("--use-llm", action="store_true")
+    parser.add_argument("--transformer", choices=["template", "llm"], default="template")
     parser.add_argument("--model", default=None)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--threads", default="2,4")
@@ -40,6 +42,7 @@ def _cfg(args):
     return default_config(
         outputs_dir=Path(args.outputs_dir) if args.outputs_dir else None,
         contract_dir=Path(args.contract_dir) if args.contract_dir else None,
+        transformer_mode=args.transformer,
         use_llm=bool(args.use_llm),
         model=args.model,
         temperature=args.temperature,
@@ -97,24 +100,11 @@ def cmd_run(args) -> int:
 def cmd_reproduce(args) -> int:
     cfg = _cfg(args)
     plan = ConcurrentTestPlan.from_dict(json.loads(Path(args.plan).read_text(encoding="utf-8")))
-    registry = ContractRegistry(cfg.contract_dir)
-    statuses = []
-    results = []
-    for _ in range(max(1, args.repeats)):
-        observations = run_plan(Path(args.generated_harness), plan, cfg)
-        result = evaluate_oracles(plan, observations, registry)
-        results.append(result)
-        statuses.append([c.status for c in result.oracle_results])
-    triggers = sum(1 for s in statuses if any(x in ("VIOLATION", "INCONCLUSIVE") for x in s))
-    rate = triggers / len(statuses) if statuses else 0.0
-    out = {
-        "plan_id": plan.plan_id,
-        "repeats": len(statuses),
-        "triggers": triggers,
-        "reproduction_rate": rate,
-        "statuses": statuses,
-        "last_result": results[-1].to_dict() if results else None,
-    }
+    out = reproduce_plan(
+        plan, Path(args.generated_harness), cfg,
+        repeats=args.repeats,
+        confirmed=args.confirmed,
+    )
     path = cfg.path("reproducers", f"{plan.plan_id}.reproduction.json")
     write_json(path, out)
     print(json.dumps({"reproduction": out, "path": str(path)}, indent=2, ensure_ascii=False))
@@ -177,6 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--plan", required=True)
     p.add_argument("--generated-harness", required=True)
     p.add_argument("--repeats", type=int, default=5)
+    p.add_argument("--confirmed", type=int, default=None,
+                   help="optional number of repeats manually confirmed as a defect")
     p.set_defaults(func=cmd_reproduce)
 
     p = sub.add_parser("reduce", help="search smaller configurations that still trigger")

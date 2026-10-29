@@ -5,7 +5,7 @@ from ..schemas import (
     INCONCLUSIVE, NOT_APPLICABLE, PASS, SUPPORTED, VIOLATION,
     OracleCheckResult,
 )
-from .common import digests_equal, first_mismatch
+from .common import digests_equal, first_mismatch, incomplete_reason, is_complete
 
 
 def _baseline_digests(baseline):
@@ -20,6 +20,12 @@ def _baseline_digests(baseline):
 
 
 def evaluate(plan, baseline, concurrent, registry) -> OracleCheckResult:
+    if not is_complete(baseline) or any(not is_complete(o) for o in concurrent):
+        return OracleCheckResult(
+            "O3", INCONCLUSIVE,
+            "Incomplete observation(s) cannot be used for independence comparison: "
+            + incomplete_reason([baseline] + list(concurrent)),
+        )
     base = _baseline_digests(baseline)
     if not base:
         return OracleCheckResult("O3", NOT_APPLICABLE, "No baseline result digest available.")
@@ -34,12 +40,12 @@ def evaluate(plan, baseline, concurrent, registry) -> OracleCheckResult:
                 continue
             for idx, d in enumerate(seq):
                 ref = base[min(idx, len(base) - 1)]
-                if not digests_equal(d, ref):
+                if not digests_equal(d, ref, rel_tol=1e-6, abs_tol=1e-8):
                     mismatches.append({
                         "threads": obs.thread_count,
                         "thread": tid,
                         "trial": idx,
-                        "mismatch_at": first_mismatch(d, ref),
+                        "mismatch_at": first_mismatch(d, ref, rel_tol=1e-6, abs_tol=1e-8),
                     })
                     break
 

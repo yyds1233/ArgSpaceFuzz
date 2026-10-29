@@ -150,6 +150,7 @@ def build_rule_report(
         required_evidence=required,
         rationale=rationale,
         confidence=confidence,
+        rule_candidates=candidates,
         analysis=analysis.to_dict(),
         llm_used=False,
     )

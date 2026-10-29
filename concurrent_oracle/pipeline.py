@@ -9,7 +9,8 @@ from .api_suitability_analyzer import analyze_artifact
 from .case_capture import capture_case
 from .case_synthesis import (
     synthesize_fork_rng_case, synthesize_grad_mode_cases,
-    synthesize_invalid_case, synthesize_trace_case,
+    synthesize_instance_method_case, synthesize_invalid_case,
+    synthesize_trace_case,
 )
 from .config import EngineConfig
 from .contract_registry import ContractRegistry
@@ -71,6 +72,8 @@ def run_pipeline(
             if "O1" in plan.oracles:
                 case = synthesize_invalid_case(artifact.api_name, case_dir)
                 if case is not None:
+                    plan.expected_exception_types = list(case.expected_exception_types)
+                    plan.expected_behavior = case.expected_behavior
                     result_row["case_source"] = "synthetic_invalid"
             elif "O6" in plan.oracles:
                 grad_cases = synthesize_grad_mode_cases(artifact.api_name, case_dir)
@@ -121,6 +124,13 @@ def run_pipeline(
                     plan.execution["baseline_case_index"] = 1
                     case = valid
                     result_row["case_source"] = "mixed_invalid_valid"
+            elif artifact.api_name.startswith("torch.Tensor."):
+                inst = synthesize_instance_method_case(artifact.api_name, case_dir)
+                if inst is not None:
+                    plan.case_paths = [inst.case_path]
+                    plan.execution["baseline_case_index"] = 0
+                    case = inst
+                    result_row["case_source"] = "synthetic_instance_method"
             if case is None:
                 case = capture_case(
                     Path(artifact.harness_path), artifact.api_name, case_dir,
@@ -132,11 +142,34 @@ def run_pipeline(
                 result_row["case_source"] = "captured"
             plan.case_path = case.case_path
             plan.save(plan_path)
-            gen = transform_harness(
-                artifact, plan, Path(case.case_path),
-                cfg.outputs_dir / "generated_harnesses",
-            )
+            gen_dir = cfg.outputs_dir / "generated_harnesses"
+            transformer_used = "template"
+            if cfg.transformer_mode == "llm":
+                from .llm_transformer import transform_with_llm
+                try:
+                    gen = transform_with_llm(
+                        artifact, plan, Path(case.case_path), gen_dir,
+                        model=cfg.model, base_url=cfg.base_url,
+                        temperature=cfg.temperature,
+                        max_tokens=max(4000, cfg.max_tokens),
+                    )
+                    transformer_used = "llm"
+                    if any("used template" in w for w in gen.warnings):
+                        transformer_used = "template"
+                except Exception as exc:
+                    result_row["llm_transformer_error"] = f"{type(exc).__name__}: {exc}"
+                    gen = transform_harness(artifact, plan, Path(case.case_path), gen_dir)
+                    transformer_used = "template"
+            else:
+                gen = transform_harness(artifact, plan, Path(case.case_path), gen_dir)
+
             validation = validate_harness(Path(gen.concurrent_harness), gen)
+            if cfg.transformer_mode == "llm" and validation.get("status") != "PASS":
+                result_row["transformer_fallback"] = "LLM output failed validation; used template"
+                gen = transform_harness(artifact, plan, Path(case.case_path), gen_dir)
+                validation = validate_harness(Path(gen.concurrent_harness), gen)
+                transformer_used = "template"
+            result_row["transformer"] = transformer_used
             write_json(cfg.path("reports", f"{plan.plan_id}.validation.json"), validation)
             result_row["generated_harness"] = gen.concurrent_harness
             result_row["validation"] = validation.get("status")
@@ -159,6 +192,7 @@ def run_pipeline(
             result_row["status"] = "EXECUTED"
             result_row["oracle_status"] = ",".join(f"{c.oracle_id}:{c.status}" for c in result.oracle_results)
             result_row["reason"] = result.summary
+            result_row["config_results"] = result.config_results
             result_row["oracle_result"] = str(result_path)
             result_row["execution"] = result.execution_status
         except Exception as exc:

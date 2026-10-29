@@ -42,6 +42,45 @@ def _make(api: str) -> Optional[Tuple[Dict[str, Any], str]]:
     return None
 
 
+def synthesize_instance_method_case(api: str, out_dir: Path) -> Optional[CaseSpec]:
+    """Synthetic control for torch.Tensor.* methods (unpatchable C methods)."""
+    import json
+    import torch
+
+    if not api.startswith("torch.Tensor."):
+        return None
+    name = api.rsplit(".", 1)[-1]
+    if name in ("add_", "sub_", "mul_", "div_"):
+        args = (torch.zeros(2, 2), torch.ones(2, 2))
+    elif name == "copy_":
+        args = (torch.zeros(2, 2), torch.ones(2, 2))
+    else:
+        return None
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    case = {"target_api": api, "args": args, "kwargs": {}}
+    case_path = out_dir / "case.instance_method.pt"
+    try:
+        torch.save(case, case_path)
+    except Exception:
+        return None
+    spec = CaseSpec(
+        target_api=api,
+        case_path=str(case_path),
+        seed_hex="",
+        call_line=None,
+        has_out=False,
+        kwargs_keys=[],
+        args_kinds=["tensor", "tensor"],
+        captured_exception=None,
+        require_out=False,
+        notes=["synthetic_instance_method_case; original call capture is not patchable"],
+    )
+    (out_dir / "case.instance_method.json").write_text(
+        json.dumps(spec.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+    return spec
+
+
 def synthesize_fork_rng_case(api: str, out_dir: Path) -> Optional[CaseSpec]:
     """O6 control: enter/exit torch.random.fork_rng in each thread."""
     if api != "torch.random.fork_rng":
@@ -177,6 +216,8 @@ def synthesize_invalid_case(api: str, out_dir: Path) -> Optional[CaseSpec]:
         args_kinds=[type(a).__name__ for a in case.get("args", ())],
         captured_exception=None,
         require_out=False,
+        expected_exception_types=[expected],
+        expected_behavior="raise",
         notes=[f"synthetic_invalid_case expected={expected}"],
     )
     (out_dir / "case.invalid.json").write_text(

@@ -5,10 +5,17 @@ from ..schemas import (
     INCONCLUSIVE, NOT_APPLICABLE, PASS, SUPPORTED, VIOLATION,
     OracleCheckResult,
 )
-from .common import digests_equal
+from .common import digests_equal, incomplete_reason, is_complete
 
 
 def evaluate(plan, baseline, concurrent, registry) -> OracleCheckResult:
+    incomplete = [o for o in concurrent if not is_complete(o)]
+    if incomplete:
+        return OracleCheckResult(
+            "O4", INCONCLUSIVE,
+            "Incomplete observation(s) cannot be used for state-preservation checks: "
+            + incomplete_reason(incomplete),
+        )
     checks = []
     for obs in concurrent:
         before = obs.input_digests_before or {}
